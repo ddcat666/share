@@ -416,6 +416,7 @@ async def trigger_agent_decision(agent_id: str, db: Session) -> dict:
     """触发单个Agent的决策（供任务调度器调用）
     
     这是 trigger_decision API 端点的核心逻辑，提取出来供 task_executor 调用。
+    使用分布式锁防止同一 Agent 并发执行决策。
     
     Args:
         agent_id: Agent ID
@@ -429,55 +430,63 @@ async def trigger_agent_decision(agent_id: str, db: Session) -> dict:
     from app.models.enums import LLMProtocol
     from app.models.entities import PromptTemplate, Portfolio
     from app.data.repositories import SentimentScoreRepository
+    from app.core.locks import agent_decision_lock, LockAcquisitionError
     
-    repo = ModelAgentRepository(db)
-    portfolio_repo = PortfolioRepository(db)
-    agent = repo.get_by_id(agent_id)
+    # 获取决策锁，防止同一 Agent 并发执行
+    lock = agent_decision_lock(agent_id)
+    if not await lock.acquire_async(blocking=False):
+        logger.warning(f"Agent {agent_id} 正在执行决策，跳过本次触发")
+        return {"success": False, "error_message": "Agent正在执行决策，请稍后重试"}
     
-    if agent is None or agent.status == AgentStatus.DELETED:
-        return {"success": False, "error_message": f"Agent不存在: {agent_id}"}
-    
-    if agent.status == AgentStatus.PAUSED:
-        return {"success": False, "error_message": "Agent已暂停，无法触发决策"}
-    
-    # 获取LLM Provider配置
-    if not agent.provider_id:
-        return {"success": False, "error_message": "Agent未配置LLM渠道"}
-    
-    provider = db.query(LLMProviderModel).filter(
-        LLMProviderModel.provider_id == agent.provider_id
-    ).first()
-    
-    if provider is None:
-        return {"success": False, "error_message": f"LLM渠道不存在: {agent.provider_id}"}
-    
-    if not provider.is_active:
-        return {"success": False, "error_message": f"LLM渠道已禁用: {provider.name}"}
-    
-    # 使用Agent管理器执行决策
-    manager = get_agent_manager()
-    
-    # 初始化LLM客户端
     try:
-        llm_client = MultiProtocolLLMClient(
-            protocol=LLMProtocol(provider.protocol),
-            api_base=provider.api_url,
-            api_key=provider.api_key,
-            default_model=agent.llm_model,
-            provider_id=provider.provider_id,
-        )
-        llm_client.set_agent_id(agent_id)
+        repo = ModelAgentRepository(db)
+        portfolio_repo = PortfolioRepository(db)
+        agent = repo.get_by_id(agent_id)
         
-        # 设置日志记录回调
-        from app.db.models import LLMRequestLogModel
-        latest_llm_log_id = [None]
+        if agent is None or agent.status == AgentStatus.DELETED:
+            return {"success": False, "error_message": f"Agent不存在: {agent_id}"}
         
-        def log_llm_request(
-            provider_id: str,
-            model_name: str,
-            agent_id: str,
-            request_content: str,
-            response_content: str,
+        if agent.status == AgentStatus.PAUSED:
+            return {"success": False, "error_message": "Agent已暂停，无法触发决策"}
+        
+        # 获取LLM Provider配置
+        if not agent.provider_id:
+            return {"success": False, "error_message": "Agent未配置LLM渠道"}
+        
+        provider = db.query(LLMProviderModel).filter(
+            LLMProviderModel.provider_id == agent.provider_id
+        ).first()
+        
+        if provider is None:
+            return {"success": False, "error_message": f"LLM渠道不存在: {agent.provider_id}"}
+        
+        if not provider.is_active:
+            return {"success": False, "error_message": f"LLM渠道已禁用: {provider.name}"}
+        
+        # 使用Agent管理器执行决策
+        manager = get_agent_manager()
+        
+        # 初始化LLM客户端
+        try:
+            llm_client = MultiProtocolLLMClient(
+                protocol=LLMProtocol(provider.protocol),
+                api_base=provider.api_url,
+                api_key=provider.api_key,
+                default_model=agent.llm_model,
+                provider_id=provider.provider_id,
+            )
+            llm_client.set_agent_id(agent_id)
+            
+            # 设置日志记录回调
+            from app.db.models import LLMRequestLogModel
+            latest_llm_log_id = [None]
+            
+            def log_llm_request(
+                provider_id: str,
+                model_name: str,
+                agent_id: str,
+                request_content: str,
+                response_content: str,
             duration_ms: int,
             status: str,
             error_message: str,
@@ -692,6 +701,9 @@ async def trigger_agent_decision(agent_id: str, db: Session) -> dict:
     except Exception as e:
         logger.exception(f"Agent {agent_id} 决策执行失败: {e}")
         return {"success": False, "error_message": str(e)}
+    finally:
+        # 释放决策锁
+        lock.release()
 
 
 @router.get(
@@ -999,51 +1011,61 @@ async def trigger_decision(
     from app.models.entities import PromptTemplate
     from app.data.repositories import StockQuoteRepository, SentimentScoreRepository
     from sqlalchemy import func
+    from app.core.locks import agent_decision_lock
     
-    repo = ModelAgentRepository(db)
-    portfolio_repo = PortfolioRepository(db)
-    agent = repo.get_by_id(agent_id)
-    
-    if agent is None or agent.status == AgentStatus.DELETED:
-        raise HTTPException(
-            status_code=404,
-            detail={"error_code": "AGENT_NOT_FOUND", "message": f"Agent不存在: {agent_id}"}
-        )
-    
-    if agent.status == AgentStatus.PAUSED:
-        raise HTTPException(
-            status_code=400,
-            detail={"error_code": "AGENT_PAUSED", "message": "Agent已暂停，无法触发决策"}
-        )
-    
-    # 获取LLM Provider配置
-    if not agent.provider_id:
+    # 获取决策锁，防止同一 Agent 并发执行
+    lock = agent_decision_lock(agent_id)
+    if not await lock.acquire_async(blocking=False):
+        logger.warning(f"Agent {agent_id} 正在执行决策，跳过本次触发")
         return TriggerDecisionResponse(
             success=False,
-            error_message="Agent未配置LLM渠道，请先在Agent设置中选择渠道"
+            error_message="Agent正在执行决策，请稍后重试"
         )
     
-    provider = db.query(LLMProviderModel).filter(
-        LLMProviderModel.provider_id == agent.provider_id
-    ).first()
-    
-    if provider is None:
-        return TriggerDecisionResponse(
-            success=False,
-            error_message=f"LLM渠道不存在: {agent.provider_id}"
-        )
-    
-    if not provider.is_active:
-        return TriggerDecisionResponse(
-            success=False,
-            error_message=f"LLM渠道已禁用: {provider.name}"
-        )
-    
-    # 使用Agent管理器执行决策
-    manager = get_agent_manager()
-    
-    # 初始化LLM客户端
     try:
+        repo = ModelAgentRepository(db)
+        portfolio_repo = PortfolioRepository(db)
+        agent = repo.get_by_id(agent_id)
+        
+        if agent is None or agent.status == AgentStatus.DELETED:
+            raise HTTPException(
+                status_code=404,
+                detail={"error_code": "AGENT_NOT_FOUND", "message": f"Agent不存在: {agent_id}"}
+            )
+        
+        if agent.status == AgentStatus.PAUSED:
+            raise HTTPException(
+                status_code=400,
+                detail={"error_code": "AGENT_PAUSED", "message": "Agent已暂停，无法触发决策"}
+            )
+        
+        # 获取LLM Provider配置
+        if not agent.provider_id:
+            return TriggerDecisionResponse(
+                success=False,
+                error_message="Agent未配置LLM渠道，请先在Agent设置中选择渠道"
+            )
+        
+        provider = db.query(LLMProviderModel).filter(
+            LLMProviderModel.provider_id == agent.provider_id
+        ).first()
+        
+        if provider is None:
+            return TriggerDecisionResponse(
+                success=False,
+                error_message=f"LLM渠道不存在: {agent.provider_id}"
+            )
+        
+        if not provider.is_active:
+            return TriggerDecisionResponse(
+                success=False,
+                error_message=f"LLM渠道已禁用: {provider.name}"
+            )
+        
+        # 使用Agent管理器执行决策
+        manager = get_agent_manager()
+        
+        # 初始化LLM客户端
         llm_client = MultiProtocolLLMClient(
             protocol=LLMProtocol(provider.protocol),
             api_base=provider.api_url,
@@ -1095,76 +1117,70 @@ async def trigger_decision(
         
         llm_client.set_log_callback(log_llm_request)
         manager.llm_client = llm_client
-    except Exception as e:
-        return TriggerDecisionResponse(
-            success=False,
-            error_message=f"初始化LLM客户端失败: {str(e)}"
-        )
-    
-    # 如果agent配置了模板，从数据库加载到PromptManager
-    if agent.template_id:
-        template_model = db.query(PromptTemplateModel).filter(
-            PromptTemplateModel.template_id == agent.template_id
-        ).first()
         
-        if template_model:
-            template = PromptTemplate(
-                template_id=template_model.template_id,
-                name=template_model.name,
-                content=template_model.content,
-                version=template_model.version,
-                created_at=template_model.created_at,
-                updated_at=template_model.updated_at,
+        # 如果agent配置了模板，从数据库加载到PromptManager
+        if agent.template_id:
+            template_model = db.query(PromptTemplateModel).filter(
+                PromptTemplateModel.template_id == agent.template_id
+            ).first()
+            
+            if template_model:
+                template = PromptTemplate(
+                    template_id=template_model.template_id,
+                    name=template_model.name,
+                    content=template_model.content,
+                    version=template_model.version,
+                    created_at=template_model.created_at,
+                    updated_at=template_model.updated_at,
+                )
+                manager.prompt_manager._templates[agent.template_id] = template
+        
+        # 从数据库加载最新的portfolio
+        portfolio = portfolio_repo.get_by_agent_id(agent_id)
+        if not portfolio:
+            # 创建空的portfolio
+            from app.models.entities import Portfolio
+            portfolio = Portfolio(
+                agent_id=agent_id,
+                cash=agent.current_cash or agent.initial_cash,
+                positions=[],
             )
-            manager.prompt_manager._templates[agent.template_id] = template
-    
-    # 从数据库加载最新的portfolio
-    portfolio = portfolio_repo.get_by_agent_id(agent_id)
-    if not portfolio:
-        # 创建空的portfolio
-        from app.models.entities import Portfolio
-        portfolio = Portfolio(
-            agent_id=agent_id,
-            cash=agent.current_cash or agent.initial_cash,
-            positions=[],
-        )
-    
-    # 准备请求数据
-    if request is None:
-        request = TriggerDecisionRequest()
-    
-    # 自动获取市场数据（如果请求中没有提供）
-    market_data = request.market_data or {}
-    if not market_data:
-        market_data = _get_market_data_for_prompt(db)
-    
-    # 从数据库获取市场情绪和大盘数据
-    from app.data.market_service import MarketDataService
-    market_service = MarketDataService(db)
-    prompt_market_data = market_service.get_market_data_for_prompt()
-    
-    # 自动获取情绪分数（如果请求中没有提供）
-    sentiment_score = request.sentiment_score
-    if sentiment_score == 0.0:
-        sentiment_repo = SentimentScoreRepository(db)
-        latest_sentiment = sentiment_repo.get_latest()
-        if latest_sentiment is not None:
-            sentiment_score = latest_sentiment
-        # 如果数据库中有市场情绪数据，使用fear_greed_index作为情绪分数
-        elif prompt_market_data.get("market_sentiment"):
-            fear_greed = prompt_market_data["market_sentiment"].get("fear_greed_index", 50)
-            # 将0-100的指数转换为-1到1的分数
-            sentiment_score = (fear_greed - 50) / 50
-    
-    financial_data = request.financial_data or {}
-    
-    # 获取热门股票近3日行情
-    hot_stocks_quotes = _get_hot_stocks_quotes(db)
-    
-    # 获取持仓股票历史行情
-    positions_quotes = _get_positions_quotes(db, agent_id)
-    
-    try:
+        
+        # 准备请求数据
+        if request is None:
+            request = TriggerDecisionRequest()
+        
+        # 自动获取市场数据（如果请求中没有提供）
+        market_data = request.market_data or {}
+        if not market_data:
+            market_data = _get_market_data_for_prompt(db)
+        
+        # 从数据库获取市场情绪和大盘数据
+        from app.data.market_service import MarketDataService
+        market_service = MarketDataService(db)
+        prompt_market_data = market_service.get_market_data_for_prompt()
+        
+        # 自动获取情绪分数（如果请求中没有提供）
+        sentiment_score = request.sentiment_score
+        if sentiment_score == 0.0:
+            sentiment_repo = SentimentScoreRepository(db)
+            latest_sentiment = sentiment_repo.get_latest()
+            if latest_sentiment is not None:
+                sentiment_score = latest_sentiment
+            # 如果数据库中有市场情绪数据，使用fear_greed_index作为情绪分数
+            elif prompt_market_data.get("market_sentiment"):
+                fear_greed = prompt_market_data["market_sentiment"].get("fear_greed_index", 50)
+                # 将0-100的指数转换为-1到1的分数
+                sentiment_score = (fear_greed - 50) / 50
+        
+        financial_data = request.financial_data or {}
+        
+        # 获取热门股票近3日行情
+        hot_stocks_quotes = _get_hot_stocks_quotes(db)
+        
+        # 获取持仓股票历史行情
+        positions_quotes = _get_positions_quotes(db, agent_id)
+        
         result = await manager.execute_decision_cycle(
             agent=agent,
             portfolio=portfolio,
@@ -1354,6 +1370,9 @@ async def trigger_decision(
             success=False,
             error_message=str(e),
         )
+    finally:
+        # 释放决策锁
+        lock.release()
 
 
 @router.post(
@@ -1431,16 +1450,11 @@ async def trigger_all_decisions(
 ):
     """触发所有活跃Agent决策
     
-    并发执行所有活跃Agent的决策，提高执行效率
+    并发执行所有活跃Agent的决策，每个Agent使用独立的锁防止并发冲突
     """
-    from app.db.models import LLMProviderModel, PromptTemplateModel, StockQuoteModel
-    from app.ai.llm_client import MultiProtocolLLMClient
-    from app.models.enums import LLMProtocol
-    from app.models.entities import PromptTemplate
-    from app.data.repositories import StockQuoteRepository, SentimentScoreRepository
+    import asyncio
     
     repo = ModelAgentRepository(db)
-    portfolio_repo = PortfolioRepository(db)
     
     # 获取所有活跃的Agent
     all_agents = repo.get_active()
@@ -1453,139 +1467,17 @@ async def trigger_all_decisions(
             "results": []
         }
     
-    # 获取市场数据（共享给所有Agent）
-    market_data = _get_market_data_for_prompt(db)
-    
-    # 获取热门股票近3日行情
-    hot_stocks_quotes = _get_hot_stocks_quotes(db)
-    
-    # 获取情绪分数
-    sentiment_repo = SentimentScoreRepository(db)
-    sentiment_score = sentiment_repo.get_latest() or 0.0
-    
-    # 并发执行所有Agent的决策
-    import asyncio
-    
+    # 并发执行所有Agent的决策（每个Agent内部有锁保护）
     async def trigger_single_agent(agent):
         """触发单个Agent决策"""
-        from app.db.models import LLMRequestLogModel
-        
         try:
-            # 检查provider配置
-            if not agent.provider_id:
-                return {
-                    "agent_id": agent.agent_id,
-                    "agent_name": agent.name,
-                    "success": False,
-                    "error": "未配置LLM渠道"
-                }
-            
-            provider = db.query(LLMProviderModel).filter(
-                LLMProviderModel.provider_id == agent.provider_id
-            ).first()
-            
-            if not provider or not provider.is_active:
-                return {
-                    "agent_id": agent.agent_id,
-                    "agent_name": agent.name,
-                    "success": False,
-                    "error": "LLM渠道不可用"
-                }
-            
-            # 使用Agent管理器执行决策
-            manager = get_agent_manager()
-            
-            # 初始化LLM客户端
-            llm_client = MultiProtocolLLMClient(
-                protocol=LLMProtocol(provider.protocol),
-                api_base=provider.api_url,
-                api_key=provider.api_key,
-                default_model=agent.llm_model,
-                provider_id=provider.provider_id,
-            )
-            llm_client.set_agent_id(agent.agent_id)
-            
-            # 设置日志记录回调（用于记录成功和失败的LLM请求）
-            def log_llm_request(
-                provider_id: str,
-                model_name: str,
-                agent_id: str,
-                request_content: str,
-                response_content: str,
-                duration_ms: int,
-                status: str,
-                error_message: str,
-                tokens_input: int,
-                tokens_output: int,
-            ):
-                try:
-                    log_entry = LLMRequestLogModel(
-                        provider_id=provider_id or "",
-                        model_name=model_name or "",
-                        agent_id=agent_id,
-                        request_content=request_content[:10000] if request_content else "",
-                        response_content=response_content[:10000] if response_content else None,
-                        duration_ms=duration_ms,
-                        status=status,
-                        error_message=error_message,
-                        tokens_input=tokens_input,
-                        tokens_output=tokens_output,
-                    )
-                    db.add(log_entry)
-                    db.commit()
-                except Exception as e:
-                    logger.error(f"记录LLM请求日志失败: {e}")
-                    db.rollback()
-            
-            llm_client.set_log_callback(log_llm_request)
-            manager.llm_client = llm_client
-            
-            # 加载模板
-            if agent.template_id:
-                template_model = db.query(PromptTemplateModel).filter(
-                    PromptTemplateModel.template_id == agent.template_id
-                ).first()
-                if template_model:
-                    template = PromptTemplate(
-                        template_id=template_model.template_id,
-                        name=template_model.name,
-                        content=template_model.content,
-                        version=template_model.version,
-                        created_at=template_model.created_at,
-                        updated_at=template_model.updated_at,
-                    )
-                    manager.prompt_manager._templates[agent.template_id] = template
-            
-            # 从数据库加载最新的portfolio
-            portfolio = portfolio_repo.get_by_agent_id(agent.agent_id)
-            if not portfolio:
-                from app.models.entities import Portfolio
-                portfolio = Portfolio(
-                    agent_id=agent.agent_id,
-                    cash=agent.current_cash or agent.initial_cash,
-                    positions=[],
-                )
-            
-            # 获取持仓股票历史行情
-            positions_quotes = _get_positions_quotes(db, agent.agent_id)
-            
-            # 执行决策
-            result = await manager.execute_decision_cycle(
-                agent=agent,
-                portfolio=portfolio,
-                market_data=market_data,
-                financial_data={},
-                sentiment_score=sentiment_score,
-                hot_stocks_quotes=hot_stocks_quotes,
-                positions_quotes=positions_quotes,
-            )
-            
+            result = await trigger_agent_decision(agent.agent_id, db)
             return {
                 "agent_id": agent.agent_id,
                 "agent_name": agent.name,
-                "success": result.success,
-                "decision": result.decision.to_dict() if result.decision else None,
-                "error": result.error_message
+                "success": result.get("success", False),
+                "executed_count": result.get("executed_count", 0),
+                "error": result.get("error_message")
             }
         except Exception as e:
             logger.exception(f"Agent {agent.agent_id} 决策执行失败: {e}")
