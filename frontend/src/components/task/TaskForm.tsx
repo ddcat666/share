@@ -22,6 +22,10 @@ interface FormData {
   quote_sync_stocks: string;
   quote_sync_days: number;
   quote_sync_force_full: boolean;
+  // Market refresh config
+  market_refresh_sentiment: boolean;
+  market_refresh_indices: boolean;
+  market_refresh_hot_stocks: boolean;
 }
 
 interface FormErrors {
@@ -50,6 +54,7 @@ const CRON_PRESETS = [
 const TASK_TYPE_OPTIONS = [
   { value: 'agent_decision', label: 'Agent决策', description: '执行AI Agent的交易决策' },
   { value: 'quote_sync', label: '行情同步', description: '同步股票行情数据' },
+  { value: 'market_refresh', label: '市场刷新', description: '刷新市场情绪、指数、热门股票' },
 ];
 
 /**
@@ -79,6 +84,10 @@ export const TaskForm: React.FC<TaskFormProps> = ({
     quote_sync_stocks: task?.task_type === 'quote_sync' && task?.config?.stock_codes ? (task.config.stock_codes as string[]).join(',') : '',
     quote_sync_days: task?.task_type === 'quote_sync' && task?.config?.days ? (task.config.days as number) : 7,
     quote_sync_force_full: task?.task_type === 'quote_sync' && task?.config?.force_full ? (task.config.force_full as boolean) : false,
+    // Market refresh config
+    market_refresh_sentiment: task?.task_type === 'market_refresh' && task?.config?.refresh_types ? (task.config.refresh_types as string[]).includes('sentiment') : true,
+    market_refresh_indices: task?.task_type === 'market_refresh' && task?.config?.refresh_types ? (task.config.refresh_types as string[]).includes('indices') : true,
+    market_refresh_hot_stocks: task?.task_type === 'market_refresh' && task?.config?.refresh_types ? (task.config.refresh_types as string[]).includes('hot_stocks') : true,
   });
 
   const [errors, setErrors] = useState<FormErrors>({});
@@ -181,6 +190,17 @@ export const TaskForm: React.FC<TaskFormProps> = ({
           stock_codes: stockCodes,
           days: formData.quote_sync_days,
           force_full: formData.quote_sync_force_full,
+        };
+      }
+
+      // Add config for market_refresh type
+      if (formData.task_type === 'market_refresh') {
+        const refreshTypes: string[] = [];
+        if (formData.market_refresh_sentiment) refreshTypes.push('sentiment');
+        if (formData.market_refresh_indices) refreshTypes.push('indices');
+        if (formData.market_refresh_hot_stocks) refreshTypes.push('hot_stocks');
+        taskData.config = {
+          refresh_types: refreshTypes,
         };
       }
 
@@ -471,6 +491,47 @@ export const TaskForm: React.FC<TaskFormProps> = ({
                 <span className="text-sm text-gray-700">强制全量同步</span>
               </label>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Market Refresh Config - Only for market_refresh type */}
+      {formData.task_type === 'market_refresh' && (
+        <div className="flex flex-col gap-3 p-4 bg-gray-50/50 rounded-lg border border-gray-200/40">
+          <Label>市场刷新配置</Label>
+          <span className="text-xs text-gray-400">选择需要刷新的数据类型</span>
+          
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.market_refresh_sentiment}
+                onChange={(e) => setFormData(prev => ({ ...prev, market_refresh_sentiment: e.target.checked }))}
+                disabled={loading || submitting}
+                className="w-4 h-4 rounded border-gray-300 text-space-black focus:ring-space-black/20"
+              />
+              <span className="text-sm text-gray-700">市场情绪</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.market_refresh_indices}
+                onChange={(e) => setFormData(prev => ({ ...prev, market_refresh_indices: e.target.checked }))}
+                disabled={loading || submitting}
+                className="w-4 h-4 rounded border-gray-300 text-space-black focus:ring-space-black/20"
+              />
+              <span className="text-sm text-gray-700">指数概览</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.market_refresh_hot_stocks}
+                onChange={(e) => setFormData(prev => ({ ...prev, market_refresh_hot_stocks: e.target.checked }))}
+                disabled={loading || submitting}
+                className="w-4 h-4 rounded border-gray-300 text-space-black focus:ring-space-black/20"
+              />
+              <span className="text-sm text-gray-700">热门股票</span>
+            </label>
           </div>
         </div>
       )}

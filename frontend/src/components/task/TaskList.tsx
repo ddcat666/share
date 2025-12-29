@@ -21,6 +21,7 @@ interface TaskListProps {
 const TASK_TYPE_LABELS: Record<TaskType, string> = {
   agent_decision: 'Agent决策',
   quote_sync: '行情同步',
+  market_refresh: '市场刷新',
 };
 
 /**

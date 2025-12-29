@@ -172,6 +172,7 @@ class TaskExecutor:
             quote_service = QuoteService(self.db)
             
             stock_codes = config.get("stock_codes", [])
+            # 从任务中获取同步股票行情天数，默认同步近7天的行情
             days = config.get("days", 7)
             force_full = config.get("force_full", False)
             
