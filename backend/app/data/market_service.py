@@ -76,7 +76,8 @@ class MarketDataService:
         # 使用共享数据刷新各项指标
         results[self.TYPE_MARKET_SENTIMENT] = await self._refresh_market_sentiment_with_data(spot_df)
         results[self.TYPE_INDEX_OVERVIEW] = await self.refresh_index_overview()
-        results[self.TYPE_HOT_STOCKS] = await self._refresh_hot_stocks_with_data(spot_df)
+        # 保存所有股票数据（不限制数量）
+        results[self.TYPE_HOT_STOCKS] = await self._refresh_hot_stocks_with_data(spot_df, limit=None)
         
         logger.info(f"Market data refresh completed: {results}")
         return results
@@ -215,12 +216,12 @@ class MarketDataService:
             logger.error(f"Failed to refresh index overview: {e}")
             return False
     
-    async def refresh_hot_stocks(self, limit: int = 100) -> bool:
+    async def refresh_hot_stocks(self, limit: Optional[int] = 500) -> bool:
         """刷新热门股票数据（单独调用时）
-        
+
         Args:
-            limit: 热门股票数量，默认100只
-            
+            limit: 热门股票数量，None表示不限制，默认500只
+
         Returns:
             是否成功
         """
@@ -232,13 +233,13 @@ class MarketDataService:
             logger.error(f"Failed to refresh hot stocks: {e}")
             return False
     
-    async def _refresh_hot_stocks_with_data(self, df, limit: int = 100) -> bool:
+    async def _refresh_hot_stocks_with_data(self, df, limit: Optional[int] = 500) -> bool:
         """使用已获取的数据刷新热门股票
-        
+
         Args:
             df: A股实时行情 DataFrame
-            limit: 热门股票数量
-            
+            limit: 热门股票数量，None表示不限制
+
         Returns:
             是否成功
         """
@@ -247,39 +248,57 @@ class MarketDataService:
                 "stocks": [],
                 "updated_at": now_str(),
             }
-            
+
             if df is not None and not df.empty:
                 # 按成交额排序
-                df = df.sort_values("成交额", ascending=False).head(limit)
+                df = df.sort_values("成交额", ascending=False)
+                if limit is not None:
+                    df = df.head(limit)
                 
                 today = today_str()
                 quotes_to_save = []
-                
+
                 for _, row in df.iterrows():
                     stock_code = row.get("代码", "")
+
+                    # 处理 NaN 值
+                    def safe_float(val, default=0.0):
+                        try:
+                            result = float(val or 0)
+                            return default if (result != result) else result  # NaN check
+                        except (ValueError, TypeError):
+                            return default
+
+                    def safe_int(val, default=0):
+                        try:
+                            result = float(val or 0)
+                            return default if (result != result) else int(result)  # NaN check
+                        except (ValueError, TypeError):
+                            return default
+
                     stock_info = {
                         "code": stock_code,
                         "name": row.get("名称", ""),
-                        "current_price": float(row.get("最新价", 0) or 0),
-                        "change_pct": float(row.get("涨跌幅", 0) or 0),
-                        "volume": int(row.get("成交量", 0) or 0),
-                        "amount": float(row.get("成交额", 0) or 0),
-                        "turnover_rate": float(row.get("换手率", 0) or 0),
+                        "current_price": safe_float(row.get("最新价")),
+                        "change_pct": safe_float(row.get("涨跌幅")),
+                        "volume": safe_int(row.get("成交量")),
+                        "amount": safe_float(row.get("成交额")),
+                        "turnover_rate": safe_float(row.get("换手率")),
                     }
                     hot_stocks_data["stocks"].append(stock_info)
-                    
+
                     # 构建行情数据，委托给 QuoteService 存储
                     from app.models.entities import StockQuote
                     quote = StockQuote(
                         stock_code=stock_code,
                         trade_date=today,
-                        open_price=Decimal(str(row.get("今开", 0) or 0)),
-                        high_price=Decimal(str(row.get("最高", 0) or 0)),
-                        low_price=Decimal(str(row.get("最低", 0) or 0)),
-                        close_price=Decimal(str(row.get("最新价", 0) or 0)),
-                        prev_close=Decimal(str(row.get("昨收", 0) or 0)),
-                        volume=int(row.get("成交量", 0) or 0),
-                        amount=Decimal(str(row.get("成交额", 0) or 0)),
+                        open_price=Decimal(str(safe_float(row.get("今开")))),
+                        high_price=Decimal(str(safe_float(row.get("最高")))),
+                        low_price=Decimal(str(safe_float(row.get("最低")))),
+                        close_price=Decimal(str(safe_float(row.get("最新价")))),
+                        prev_close=Decimal(str(safe_float(row.get("昨收")))),
+                        volume=safe_int(row.get("成交量")),
+                        amount=Decimal(str(safe_float(row.get("成交额")))),
                         stock_name=str(row.get("名称", "")) or None,
                     )
                     quotes_to_save.append(quote)

@@ -69,6 +69,25 @@ class KLineListResponse(BaseModel):
     data: List[KLineDataResponse] = Field(..., description="K线数据列表")
 
 
+class MinuteDataResponse(BaseModel):
+    """分时数据响应"""
+    time: str = Field(..., description="时间 (YYYY-MM-DD HH:MM:SS)")
+    open: float = Field(..., description="开盘价")
+    high: float = Field(..., description="最高价")
+    low: float = Field(..., description="最低价")
+    close: float = Field(..., description="收盘价")
+    volume: int = Field(..., description="成交量")
+    amount: float = Field(..., description="成交额")
+    avg_price: float = Field(..., description="均价")
+
+
+class MinuteDataListResponse(BaseModel):
+    """分时数据列表响应"""
+    stock_code: str = Field(..., description="股票代码")
+    period: str = Field(..., description="周期类型 (1/5/15/30/60分钟)")
+    data: List[MinuteDataResponse] = Field(..., description="分时数据列表")
+
+
 # ============ 资金流向响应模型 ============
 
 class CapitalFlowDataResponse(BaseModel):
@@ -443,6 +462,70 @@ async def get_stock_kline(
         cache_service.set_stock_kline(stock_code, period, [d.model_dump() for d in data])
     
     return KLineListResponse(
+        stock_code=stock_code,
+        period=period,
+        data=data,
+    )
+
+
+@router.get(
+    "/{stock_code}/minute",
+    response_model=MinuteDataListResponse,
+    summary="获取分时数据",
+    description="获取指定股票的分时数据，支持1/5/15/30/60分钟周期",
+)
+@handle_stock_errors
+async def get_stock_minute_data(
+    stock_code: str,
+    period: str = Query(
+        default="1",
+        description="周期类型: 1(1分钟), 5(5分钟), 15(15分钟), 30(30分钟), 60(60分钟)",
+        pattern="^(1|5|15|30|60)$",
+    ),
+    start_date: Optional[str] = Query(
+        default=None,
+        description="开始日期时间 (YYYY-MM-DD HH:MM:SS)",
+    ),
+    end_date: Optional[str] = Query(
+        default=None,
+        description="结束日期时间 (YYYY-MM-DD HH:MM:SS)",
+    ),
+    db: Session = Depends(get_db),
+) -> MinuteDataListResponse:
+    """获取分时数据
+
+    Args:
+        stock_code: 股票代码（6位数字）
+        period: 周期类型 (1/5/15/30/60分钟)
+        start_date: 开始日期时间 (YYYY-MM-DD HH:MM:SS)
+        end_date: 结束日期时间 (YYYY-MM-DD HH:MM:SS)
+
+    Returns:
+        MinuteDataListResponse: 分时数据列表
+    """
+    service = StockDataService(db)
+    minutes = await service.get_minute_data(
+        stock_code=stock_code,
+        period=period,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    data = [
+        MinuteDataResponse(
+            time=m.time,
+            open=m.open,
+            high=m.high,
+            low=m.low,
+            close=m.close,
+            volume=m.volume,
+            amount=m.amount,
+            avg_price=m.avg_price,
+        )
+        for m in minutes
+    ]
+
+    return MinuteDataListResponse(
         stock_code=stock_code,
         period=period,
         data=data,

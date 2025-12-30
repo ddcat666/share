@@ -38,7 +38,9 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
 }) => {
   // Format date
   const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
+    // 后端返回的是中国时间字符串（无时区信息），需要直接解析
+    // 添加 'T' 和时区信息以确保正确解析
+    const date = new Date(dateStr.replace(' ', 'T') + '+08:00');
     return date.toLocaleDateString('zh-CN', {
       month: '2-digit',
       day: '2-digit',

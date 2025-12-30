@@ -129,6 +129,19 @@ class KLineData:
 
 
 @dataclass
+class MinuteData:
+    """分时数据（分钟级别）"""
+    time: str           # 时间 (YYYY-MM-DD HH:MM:SS)
+    open: float         # 开盘价
+    high: float         # 最高价
+    low: float          # 最低价
+    close: float        # 收盘价
+    volume: int         # 成交量
+    amount: float       # 成交额
+    avg_price: float    # 均价
+
+
+@dataclass
 class CapitalFlowData:
     """资金流向数据"""
     date: str               # 日期
@@ -302,7 +315,21 @@ class StockDataService:
                     source="AkShare",
                 )
         return self._ak
-    
+
+    def _get_market_code(self, stock_code: str) -> str:
+        """根据股票代码获取市场代码
+
+        Args:
+            stock_code: 6位股票代码
+
+        Returns:
+            市场代码: 'sh' 或 'sz'
+        """
+        if stock_code.startswith(('6', '5')):
+            return 'sh'
+        else:
+            return 'sz'
+
     async def _run_sync(self, func: Callable[..., T], *args, **kwargs) -> T:
         """在线程池中运行同步函数
         
@@ -541,7 +568,7 @@ class StockDataService:
     ) -> List[KLineData]:
         """同步获取K线数据"""
         ak = self._get_ak()
-        
+
         try:
             # 转换周期参数
             period_map = {
@@ -550,40 +577,53 @@ class StockDataService:
                 "monthly": "monthly",
             }
             ak_period = period_map.get(period, "daily")
-            
+
             # 格式化日期（去掉横线）
             start = start_date.replace("-", "") if start_date else None
             end = end_date.replace("-", "") if end_date else None
-            
+
+            logger.debug(f"Fetching kline: stock={stock_code}, period={ak_period}, start={start}, end={end}, limit={limit}")
+
             # 获取K线数据
+            logger.debug(f"Calling ak.stock_zh_a_hist with symbol={stock_code}, period={ak_period}, start_date={start}, end_date={end}")
             df = ak.stock_zh_a_hist(
                 symbol=stock_code,
                 period=ak_period,
-                start_date=start,
-                end_date=end,
+                start_date=start if start else "19700101",
+                end_date=end if end else "20500101",
                 adjust="",  # 不复权
             )
-            
+
+            logger.debug(f"AkShare returned: type={type(df)}, rows={len(df) if df is not None and not df.empty else 0}, is_none={df is None}, is_empty={df.empty if df is not None else 'N/A'}")
+
             if df is None or df.empty:
+                logger.warning(f"No kline data for {stock_code}")
                 return []
-            
+
+            logger.debug(f"DataFrame columns: {list(df.columns)}")
+
             # 限制返回条数
             if limit and len(df) > limit:
                 df = df.tail(limit)
-            
+
             klines = []
-            for _, row in df.iterrows():
-                kline = KLineData(
-                    date=safe_str(row.get("日期")),
-                    open=safe_float(row.get("开盘")),
-                    high=safe_float(row.get("最高")),
-                    low=safe_float(row.get("最低")),
-                    close=safe_float(row.get("收盘")),
-                    volume=safe_int(row.get("成交量")),
-                    amount=safe_float(row.get("成交额")),
-                )
-                klines.append(kline)
-            
+            for idx, row in df.iterrows():
+                try:
+                    kline = KLineData(
+                        date=safe_str(row.get("日期")),
+                        open=safe_float(row.get("开盘")),
+                        high=safe_float(row.get("最高")),
+                        low=safe_float(row.get("最低")),
+                        close=safe_float(row.get("收盘")),
+                        volume=safe_int(row.get("成交量")),
+                        amount=safe_float(row.get("成交额")),
+                    )
+                    klines.append(kline)
+                except Exception as e:
+                    logger.error(f"Error processing kline row {idx}: {e}")
+                    continue
+
+            logger.debug(f"Processed {len(klines)} klines for {stock_code}")
             return klines
             
         except StockDataError:
@@ -592,6 +632,111 @@ class StockDataService:
             logger.error(f"Failed to get kline data for {stock_code}: {e}")
             raise StockDataError(
                 message=f"获取K线数据失败: {e}",
+                stock_code=stock_code,
+            )
+
+    # ============ 分时数据 ============
+
+    async def get_minute_data(
+        self,
+        stock_code: str,
+        period: str = "1",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> List[MinuteData]:
+        """获取分时数据
+
+        使用 stock_zh_a_hist_min_em 接口获取分钟级别的历史数据。
+
+        Args:
+            stock_code: 股票代码（6位数字）
+            period: 周期类型 ('1', '5', '15', '30', '60')，默认1分钟
+            start_date: 开始日期时间 (YYYY-MM-DD HH:MM:SS)，可选
+            end_date: 结束日期时间 (YYYY-MM-DD HH:MM:SS)，可选
+
+        Returns:
+            List[MinuteData] 分时数据列表
+
+        Raises:
+            StockNotFoundError: 股票不存在
+            StockDataError: 数据获取失败
+        """
+        return await self._fetch_with_retry(
+            self._get_minute_data_sync,
+            stock_code,
+            period,
+            start_date,
+            end_date,
+            stock_code=stock_code,
+        )
+
+    def _get_minute_data_sync(
+        self,
+        stock_code: str,
+        period: str,
+        start_date: Optional[str],
+        end_date: Optional[str],
+    ) -> List[MinuteData]:
+        """同步获取分时数据"""
+        ak = self._get_ak()
+
+        try:
+            # 验证周期参数
+            if period not in ['1', '5', '15', '30', '60']:
+                period = '1'
+
+            # 设置默认时间范围（最近5个交易日）
+            if not start_date:
+                start_date = "1979-09-01 09:32:00"
+            if not end_date:
+                end_date = "2222-01-01 09:32:00"
+
+            logger.debug(f"Fetching minute data: stock={stock_code}, period={period}, start={start_date}, end={end_date}")
+
+            # 获取分时数据
+            df = ak.stock_zh_a_hist_min_em(
+                symbol=stock_code,
+                start_date=start_date,
+                end_date=end_date,
+                period=period,
+                adjust="",  # 不复权
+            )
+
+            logger.debug(f"AkShare returned: rows={len(df) if df is not None and not df.empty else 0}")
+
+            if df is None or df.empty:
+                logger.warning(f"No minute data for {stock_code}")
+                return []
+
+            logger.debug(f"DataFrame columns: {list(df.columns)}")
+
+            minutes = []
+            for idx, row in df.iterrows():
+                try:
+                    minute = MinuteData(
+                        time=safe_str(row.get("时间")),
+                        open=safe_float(row.get("开盘")),
+                        high=safe_float(row.get("最高")),
+                        low=safe_float(row.get("最低")),
+                        close=safe_float(row.get("收盘")),
+                        volume=safe_int(row.get("成交量")),
+                        amount=safe_float(row.get("成交额")),
+                        avg_price=safe_float(row.get("均价", row.get("收盘"))),  # 如果没有均价，使用收盘价
+                    )
+                    minutes.append(minute)
+                except Exception as e:
+                    logger.warning(f"Failed to parse minute data row {idx}: {e}")
+                    continue
+
+            logger.info(f"Successfully parsed {len(minutes)} minute data points for {stock_code}")
+            return minutes
+
+        except StockDataError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get minute data for {stock_code}: {e}")
+            raise StockDataError(
+                message=f"获取分时数据失败: {e}",
                 stock_code=stock_code,
             )
 
@@ -846,19 +991,37 @@ class StockDataService:
     def _get_shareholders_sync(self, stock_code: str) -> List[Shareholder]:
         """同步获取股东信息"""
         ak = self._get_ak()
-        
+
         try:
-            # 使用 stock_gdfx_free_holding_detail_em 获取十大流通股东
-            df = ak.stock_gdfx_free_holding_detail_em(symbol=stock_code)
-            
+            # 使用 stock_gdfx_free_top_10_em 获取十大流通股东
+            # 需要添加市场前缀（sh/sz）
+            market_code = self._get_market_code(stock_code)
+            symbol_with_market = f"{market_code}{stock_code}"
+
+            # 获取最新的报告期数据
+            from datetime import datetime
+            current_date = datetime.now()
+            # 尝试最近几个季度的数据
+            quarters = [
+                f"{current_date.year}0930",  # Q3
+                f"{current_date.year}0630",  # Q2
+                f"{current_date.year}0331",  # Q1
+                f"{current_date.year - 1}1231",  # 上年Q4
+            ]
+
+            df = None
+            for quarter in quarters:
+                try:
+                    df = ak.stock_gdfx_free_top_10_em(symbol=symbol_with_market, date=quarter)
+                    if df is not None and not df.empty:
+                        break
+                except:
+                    continue
+
             if df is None or df.empty:
+                logger.warning(f"No shareholder data for {stock_code}")
                 return []
-            
-            # 取最新一期的数据（按日期排序后取前10条）
-            if "截止日期" in df.columns:
-                latest_date = df["截止日期"].max()
-                df = df[df["截止日期"] == latest_date]
-            
+
             shareholders = []
             for _, row in df.iterrows():
                 shareholder = Shareholder(
@@ -868,7 +1031,7 @@ class StockDataService:
                     nature=safe_str(row.get("股东性质")),
                 )
                 shareholders.append(shareholder)
-            
+
             # 限制返回前10个股东
             return shareholders[:10]
             

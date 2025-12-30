@@ -15,9 +15,9 @@
   --color-glass-white-50: rgba(255, 255, 255, 0.5);
   --color-glass-white-60: rgba(255, 255, 255, 0.6);
   
-  /* 状态颜色 */
-  --color-profit-green: #34C759;
-  --color-loss-red: #FF3B30;
+  /* 状态颜色 - 中国股市习惯：红涨绿跌 */
+  --color-profit-green: #FF3B30;  /* 上涨用红色 */
+  --color-loss-red: #34C759;      /* 下跌用绿色 */
   --color-warning-orange: #FF9500;
   --color-info-blue: #007AFF;
   

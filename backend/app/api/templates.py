@@ -190,8 +190,8 @@ async def create_template(
         name=request.name,
         content=request.content,
         version=1,
-        created_at=now,
-        updated_at=now,
+        created_at=current_time,
+        updated_at=current_time,
     )
     manager._templates[template_id] = template
     

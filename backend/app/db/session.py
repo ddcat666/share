@@ -13,6 +13,10 @@ engine = create_engine(
     pool_size=10,
     max_overflow=20,
     echo=settings.SQL_ECHO,  # 通过SQL_ECHO配置控制是否打印SQL
+    connect_args={
+        "charset": "utf8mb4",
+        "use_unicode": True,
+    }
 )
 
 # 设置连接时区为中国时区

@@ -251,9 +251,15 @@ class StockQuoteRepository:
             )
         )
         
-        # 搜索过滤
+        # 搜索过滤（支持股票代码和股票名称）
         if search:
-            query = query.filter(StockQuoteModel.stock_code.like(f"%{search}%"))
+            from sqlalchemy import or_
+            query = query.filter(
+                or_(
+                    StockQuoteModel.stock_code.like(f"%{search}%"),
+                    StockQuoteModel.stock_name.like(f"%{search}%")
+                )
+            )
         
         # 获取总数
         total = query.count()
