@@ -801,6 +801,24 @@ export interface KLineListResponse {
   data: KLineData[];
 }
 
+// 分时数据
+export interface MinuteData {
+  time: string;           // 时间 (YYYY-MM-DD HH:MM:SS)
+  open: number;           // 开盘价
+  high: number;           // 最高价
+  low: number;            // 最低价
+  close: number;          // 收盘价
+  volume: number;         // 成交量
+  amount: number;         // 成交额
+  avg_price: number;      // 均价
+}
+
+export interface MinuteDataListResponse {
+  stock_code: string;
+  period: string;
+  data: MinuteData[];
+}
+
 // 资金流向数据
 export interface CapitalFlowData {
   date: string;
@@ -1104,6 +1122,19 @@ export const stockApi = {
   // 获取缓存的AI分析报告
   getAIAnalysis: async (stockCode: string): Promise<AIAnalysisResult | null> => {
     const response = await apiClient.get<AIAnalysisResult | null>(`/stock/${stockCode}/ai-analysis`);
+    return response.data;
+  },
+
+  // 获取分时数据
+  getMinuteData: async (
+    stockCode: string,
+    params?: {
+      period?: '1' | '5' | '15' | '30' | '60';
+      start_date?: string;
+      end_date?: string;
+    }
+  ): Promise<MinuteDataListResponse> => {
+    const response = await apiClient.get<MinuteDataListResponse>(`/stock/${stockCode}/minute`, { params });
     return response.data;
   },
 };

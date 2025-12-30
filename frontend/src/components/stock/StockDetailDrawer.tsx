@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { stockApi, type StockBasicInfo, type StockRealtimeQuote } from '../../services/api';
 import { StockHeader } from './StockHeader';
 import { OverviewTab } from './tabs/OverviewTab';
+import { MinuteTab } from './tabs/MinuteTab';
 import { CapitalTab } from './tabs/CapitalTab';
 import { ProfileTab } from './tabs/ProfileTab';
 import { NewsTab } from './tabs/NewsTab';
@@ -14,11 +15,12 @@ export interface StockDetailDrawerProps {
 }
 
 // 标签类型
-type TabType = 'overview' | 'capital' | 'profile' | 'news' | 'finance' | 'ai-analysis';
+type TabType = 'overview' | 'minute' | 'capital' | 'profile' | 'news' | 'finance' | 'ai-analysis';
 
 // 标签配置
 const TAB_CONFIG: { key: TabType; label: string }[] = [
   { key: 'overview', label: '概览' },
+  { key: 'minute', label: '分时' },
   { key: 'capital', label: '资金' },
   { key: 'profile', label: '简况' },
   { key: 'news', label: '资讯' },
@@ -37,6 +39,7 @@ export const StockDetailDrawer: React.FC<StockDetailDrawerProps> = ({ stockCode,
   const [quote, setQuote] = useState<StockRealtimeQuote | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [error, setError] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true); // 自动刷新开关
 
   // 加载股票基本信息和实时行情
   const loadStockData = useCallback(async (code: string) => {
@@ -47,7 +50,7 @@ export const StockDetailDrawer: React.FC<StockDetailDrawerProps> = ({ stockCode,
         stockApi.getInfo(code),
         stockApi.getQuote(code),
       ]);
-      
+
       setStockInfo(infoResponse);
       setQuote(quoteResponse);
     } catch (err) {
@@ -55,6 +58,16 @@ export const StockDetailDrawer: React.FC<StockDetailDrawerProps> = ({ stockCode,
       setError('加载股票数据失败，请稍后重试');
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  // 刷新实时行情（不显示loading）
+  const refreshQuote = useCallback(async (code: string) => {
+    try {
+      const quoteResponse = await stockApi.getQuote(code);
+      setQuote(quoteResponse);
+    } catch (err) {
+      console.error('刷新行情失败:', err);
     }
   }, []);
 
@@ -72,6 +85,17 @@ export const StockDetailDrawer: React.FC<StockDetailDrawerProps> = ({ stockCode,
       setActiveTab('overview');
     }
   }, [stockCode, loadStockData]);
+
+  // 自动刷新实时行情（每5秒）
+  useEffect(() => {
+    if (!stockCode || !autoRefresh) return;
+
+    const interval = setInterval(() => {
+      refreshQuote(stockCode);
+    }, 5000); // 5秒刷新一次
+
+    return () => clearInterval(interval);
+  }, [stockCode, autoRefresh, refreshQuote]);
 
   // 点击遮罩关闭
   const handleBackdropClick = (e: React.MouseEvent) => {
@@ -109,6 +133,8 @@ export const StockDetailDrawer: React.FC<StockDetailDrawerProps> = ({ stockCode,
     switch (activeTab) {
       case 'overview':
         return <OverviewTab stockCode={stockCode} />;
+      case 'minute':
+        return <MinuteTab stockCode={stockCode} />;
       case 'capital':
         return <CapitalTab stockCode={stockCode} />;
       case 'profile':
@@ -141,15 +167,27 @@ export const StockDetailDrawer: React.FC<StockDetailDrawerProps> = ({ stockCode,
         <div className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-gray-200/50">
           {/* 关闭按钮 + 股票头部信息 */}
           <div className="flex items-start">
-            {/* 关闭按钮 */}
-            <div className="flex-shrink-0 p-3">
+            {/* 关闭按钮和自动刷新开关 */}
+            <div className="flex-shrink-0 p-3 flex items-center gap-2">
               <button
                 onClick={onClose}
                 className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                 data-testid="close-button"
+                title="关闭"
               >
                 <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+
+              {/* 自动刷新开关 */}
+              <button
+                onClick={() => setAutoRefresh(!autoRefresh)}
+                className={`p-2 rounded-lg transition-colors ${autoRefresh ? 'bg-info-blue/10 text-info-blue' : 'hover:bg-gray-100 text-gray-500'}`}
+                title={autoRefresh ? '关闭自动刷新' : '开启自动刷新（每5秒）'}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
               </button>
             </div>
