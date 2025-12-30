@@ -291,6 +291,7 @@ class ModelAgentRepository:
             status=AgentStatus(model.status),
             current_cash=Decimal(str(model.current_cash)),
             schedule_type=model.schedule_type or "daily",
+            updated_at=model.updated_at,
         )
 
 

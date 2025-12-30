@@ -135,6 +135,7 @@ class ModelAgent:
     status: AgentStatus = AgentStatus.ACTIVE
     current_cash: Optional[Decimal] = None
     schedule_type: str = "daily"
+    updated_at: Optional[datetime] = None
 
     def __post_init__(self):
         if self.current_cash is None:

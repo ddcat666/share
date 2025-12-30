@@ -740,9 +740,11 @@ async def list_agents(
             all_agents.sort(key=lambda a: a.name, reverse=reverse)
         elif sort_by == "created_at":
             all_agents.sort(key=lambda a: a.created_at, reverse=reverse)
+        elif sort_by == "updated_at":
+            all_agents.sort(key=lambda a: a.updated_at or a.created_at, reverse=reverse)
     else:
-        # 默认按创建时间降序
-        all_agents.sort(key=lambda a: a.created_at, reverse=True)
+        # 默认按更新时间降序
+        all_agents.sort(key=lambda a: a.updated_at or a.created_at, reverse=True)
     
     # 计算分页
     total = len(all_agents)
